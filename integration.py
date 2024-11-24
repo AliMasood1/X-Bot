@@ -1,6 +1,10 @@
-import requests
+
 import time
-from itertools import cycle
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+
+from webdriver_manager.chrome import ChromeDriverManager
 
 def load_proxies(file_path):
     with open(file_path, 'r') as file:
@@ -13,60 +17,68 @@ def load_auth_tokens(file_path):
     return [token.strip() for token in tokens]
 
 
-def get_twitter_bio(username, auth_token, proxy):
-    url = f"https://api.twitter.com/2/users/by/username/{username}"
-    headers = {
-        "Authorization": f"Bearer {auth_token}"
-    }
-    proxy_parts = proxy.split(":")
-    if len(proxy_parts) == 4:
-        formatted_proxy = f"http://{proxy_parts[2]}:{proxy_parts[3]}@{proxy_parts[0]}:{proxy_parts[1]}"
-    else:
-        formatted_proxy = f"http://{proxy}"
+TARGET_HANDLE = "elonmusk"
 
-    proxy_dict = {
-        "http": formatted_proxy,
-        "https": formatted_proxy
-    }
+def setup_driver():
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless") # Run in headless mode (optional)
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    return driver
 
+def inject_auth_token(driver, auth_token):
+    driver.get("https://twitter.com")
+    time.sleep(2)
+    cookie = {
+    "name": "auth_token",
+    "value": auth_token,
+    "domain": "x.com",
+    "path": "/",
+    "httpOnly": True,
+    "secure": True,
+}
+
+
+    driver.add_cookie(cookie)
+    driver.refresh()
+    time.sleep(2)
+
+def get_twitter_bio(driver, handle):
     try:
-        response = requests.get(url, headers=headers, proxies=proxy_dict, timeout=5)
-        response.raise_for_status()
-        user_data = response.json()
-        return user_data.get("data", {}).get("description", None)
+        url = f"https://twitter.com/{handle}"
+        driver.get(url)
+        time.sleep(3) # Wait for the page to load
+
+        bio_element = driver.find_element(By.XPATH, '//div[@data-testid="UserDescription"]')
+        return bio_element.text
     except Exception as e:
         print(f"Error fetching bio: {e}")
-        return None
+    return None
 
-
-def monitor_bio(username, proxy_file, auth_file):
-    proxies = load_proxies(proxy_file)
-    tokens = load_auth_tokens(auth_file)
-
-    proxy_pool = cycle(proxies)
-    token_pool = cycle(tokens)
-
+def monitor_bio():
+    global current_bio
     last_bio = None
+    driver = setup_driver()
+    tokens = load_auth_tokens('auth_tokens.txt')
 
-    while True:
-        proxy = next(proxy_pool)
-        token = next(token_pool)
+    try:
+        for auth_token in tokens:
+            print(f"Using auth token: {auth_token}...")
+            inject_auth_token(driver, auth_token)
+            current_bio = get_twitter_bio(driver, TARGET_HANDLE)
+            print(TARGET_HANDLE + ":" +current_bio)
 
-        current_bio = get_twitter_bio(username, token, proxy)
-
-        if current_bio is not None:
-            if last_bio is None:
-                print(f"Initial bio: {current_bio}")
-            elif current_bio != last_bio:
-                print(f"Bio changed! New bio: {current_bio}")
-
+        if current_bio and current_bio != last_bio:
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Bio updated: {current_bio}")
             last_bio = current_bio
 
-        time.sleep(0.6)  # Check every 600 ms
+    except Exception as e:
+        print(f"Error during monitoring with token : {e}")
+
+        print("Rotating to next auth token...")
+        time.sleep(1)
 
 if __name__ == "__main__":
-    USERNAME = "Apple"  # Replace with the Twitter username you want to monitor
-    PROXY_FILE = "proxies.txt"  # Path to the proxy text file
-    AUTH_FILE = "auth_tokens.txt"  # Path to the auth token text file
-
-    monitor_bio(USERNAME, PROXY_FILE, AUTH_FILE)
+    monitor_bio()
